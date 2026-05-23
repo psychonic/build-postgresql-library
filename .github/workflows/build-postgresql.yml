@@ -1,0 +1,198 @@
+name: Build PostgreSQL
+
+on:
+  push:
+    paths:
+      - pushbuild.txt
+  pull_request:
+    paths:
+      - pushbuild.txt
+  workflow_dispatch:
+
+env:
+  POSTGRESQL_VERSION: 18.4
+  CONFIGURE_FLAGS: --without-readline --without-icu --without-zlib
+  MESON_FLAGS: -Dreadline=disabled -Dicu=disabled -Dlibcurl=disabled -Dzlib=disabled -Dssl=none -Db_vscrt=mt
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, ubuntu-22.04]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Setup Linux dependencies
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential gcc-multilib g++-multilib
+
+    - name: Setup Windows dependencies
+      if: runner.os == 'Windows'
+      run: |
+        choco install winflexbison3 -y
+        python -m pip install --user meson ninja
+
+    - name: Download PostgreSQL
+      shell: bash
+      run: |
+        curl -L "https://ftp.postgresql.org/pub/source/v${{ env.POSTGRESQL_VERSION }}/postgresql-${{ env.POSTGRESQL_VERSION }}.tar.gz" -o postgresql.tar.gz
+        tar -xzf postgresql.tar.gz
+        mv postgresql-${{ env.POSTGRESQL_VERSION }} postgresql-source
+
+    - name: Build PostgreSQL (Windows 32-bit)
+      if: runner.os == 'Windows'
+      uses: TheMrMilchmann/setup-msvc-dev@v4
+      with:
+        arch: x86
+
+    - name: Compile PostgreSQL (Windows 32-bit)
+      if: runner.os == 'Windows'
+      shell: cmd
+      run: |
+        cd postgresql-source
+        python -m mesonbuild.mesonmain setup build-win32 . --backend=ninja %MESON_FLAGS%
+        python -m ninja -C build-win32 src/interfaces/libpq/libpq.a src/common/libpgcommon_shlib.a src/port/libpgport_shlib.a
+        mkdir ..\postgresql-artifacts\lib_win
+        copy /Y build-win32\src\interfaces\libpq\libpq.a ..\postgresql-artifacts\lib_win\libpq.lib || exit /b 1
+        copy /Y build-win32\src\common\libpgcommon_shlib.a ..\postgresql-artifacts\lib_win\libpgcommon_shlib.lib || exit /b 1
+        copy /Y build-win32\src\port\libpgport_shlib.a ..\postgresql-artifacts\lib_win\libpgport_shlib.lib || exit /b 1
+        copy /Y src\interfaces\libpq\libpq-fe.h ..\postgresql-artifacts\lib_win\libpq-fe.h || exit /b 1
+        copy /Y src\include\postgres_ext.h ..\postgresql-artifacts\lib_win\postgres_ext.h || exit /b 1
+
+    - name: Build PostgreSQL (Windows 64-bit)
+      if: runner.os == 'Windows'
+      uses: TheMrMilchmann/setup-msvc-dev@v4
+      with:
+        arch: x64
+
+    - name: Compile PostgreSQL (Windows 64-bit)
+      if: runner.os == 'Windows'
+      shell: cmd
+      run: |
+        cd postgresql-source
+        python -m mesonbuild.mesonmain setup build-win64 . --backend=ninja %MESON_FLAGS%
+        python -m ninja -C build-win64 src/interfaces/libpq/libpq.a src/common/libpgcommon_shlib.a src/port/libpgport_shlib.a
+        mkdir ..\postgresql-artifacts\lib_win64
+        copy /Y build-win64\src\interfaces\libpq\libpq.a ..\postgresql-artifacts\lib_win64\libpq.lib || exit /b 1
+        copy /Y build-win64\src\common\libpgcommon_shlib.a ..\postgresql-artifacts\lib_win64\libpgcommon_shlib.lib || exit /b 1
+        copy /Y build-win64\src\port\libpgport_shlib.a ..\postgresql-artifacts\lib_win64\libpgport_shlib.lib || exit /b 1
+        copy /Y src\interfaces\libpq\libpq-fe.h ..\postgresql-artifacts\lib_win64\libpq-fe.h || exit /b 1
+        copy /Y src\include\postgres_ext.h ..\postgresql-artifacts\lib_win64\postgres_ext.h || exit /b 1
+        dir /s ..\postgresql-artifacts
+
+    - name: Build PostgreSQL (Linux 64-bit)
+      if: runner.os == 'Linux'
+      run: |
+        mkdir build-linux64
+        cd build-linux64
+        CFLAGS="-fPIC -m64" LDFLAGS="-m64" ../postgresql-source/configure ${{ env.CONFIGURE_FLAGS }}
+        make -j"$(nproc)" -C src/backend generated-headers
+        make -j"$(nproc)" -C src/port libpgport_shlib.a
+        make -j"$(nproc)" -C src/common libpgcommon_shlib.a
+        make -j"$(nproc)" -C src/interfaces/libpq libpq.a SHLIB_PREREQS=
+        mkdir -p ../postgresql-artifacts/lib_linux64
+        cp src/interfaces/libpq/libpq.a ../postgresql-artifacts/lib_linux64/
+        cp src/common/libpgcommon_shlib.a ../postgresql-artifacts/lib_linux64/
+        cp src/port/libpgport_shlib.a ../postgresql-artifacts/lib_linux64/
+        cp ../postgresql-source/src/interfaces/libpq/libpq-fe.h ../postgresql-artifacts/lib_linux64/
+        cp ../postgresql-source/src/include/postgres_ext.h ../postgresql-artifacts/lib_linux64/
+
+    - name: Build PostgreSQL (Linux 32-bit)
+      if: runner.os == 'Linux'
+      run: |
+        mkdir build-linux32
+        cd build-linux32
+        CFLAGS="-fPIC -m32" LDFLAGS="-m32" ../postgresql-source/configure ${{ env.CONFIGURE_FLAGS }}
+        make -j"$(nproc)" -C src/backend generated-headers
+        make -j"$(nproc)" -C src/port libpgport_shlib.a
+        make -j"$(nproc)" -C src/common libpgcommon_shlib.a
+        make -j"$(nproc)" -C src/interfaces/libpq libpq.a SHLIB_PREREQS=
+        mkdir -p ../postgresql-artifacts/lib_linux
+        cp src/interfaces/libpq/libpq.a ../postgresql-artifacts/lib_linux/
+        cp src/common/libpgcommon_shlib.a ../postgresql-artifacts/lib_linux/
+        cp src/port/libpgport_shlib.a ../postgresql-artifacts/lib_linux/
+        cp ../postgresql-source/src/interfaces/libpq/libpq-fe.h ../postgresql-artifacts/lib_linux/
+        cp ../postgresql-source/src/include/postgres_ext.h ../postgresql-artifacts/lib_linux/
+        find ../postgresql-artifacts -maxdepth 2 -type f -print | sort
+
+    - name: Archive artifacts
+      uses: actions/upload-artifact@v7
+      with:
+        name: postgresql-${{ matrix.os }}-static-${{ env.POSTGRESQL_VERSION }}
+        path: postgresql-artifacts/*
+        if-no-files-found: error
+
+  create-release-note:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v8
+      with:
+        path: artifacts
+
+    - name: Create Release Archive
+      run: |
+        for artifact_root in artifacts/postgresql-*-static-${{ env.POSTGRESQL_VERSION }}; do
+          package_name="$(basename "${artifact_root}")"
+          package_dir="package-${package_name}"
+
+          mkdir -p "${package_dir}"
+          cp -R "${artifact_root}"/lib_* "${package_dir}/"
+          (cd "${package_dir}" && 7z a -tzip -r "../${package_name}.zip" ./*)
+        done
+
+    - name: Create Release Note
+      run: |
+        echo "# PostgreSQL Static Libraries Release" > RELEASE_NOTE.md
+        echo "## Version: ${{ env.POSTGRESQL_VERSION }}" >> RELEASE_NOTE.md
+        echo "### Build Information" >> RELEASE_NOTE.md
+        echo "- PostgreSQL Version: ${{ env.POSTGRESQL_VERSION }}" >> RELEASE_NOTE.md
+        echo "- Build Date: $(date +'%Y-%m-%d')" >> RELEASE_NOTE.md
+        echo "- Linux Configure Args: ${{ env.CONFIGURE_FLAGS }}" >> RELEASE_NOTE.md
+        echo "- Windows Meson Args: ${{ env.MESON_FLAGS }}" >> RELEASE_NOTE.md
+        echo "### Build Artifacts" >> RELEASE_NOTE.md
+        echo "- postgresql-windows-latest-static-${{ env.POSTGRESQL_VERSION }}.zip" >> RELEASE_NOTE.md
+        echo "- postgresql-ubuntu-latest-static-${{ env.POSTGRESQL_VERSION }}.zip" >> RELEASE_NOTE.md
+        echo "- postgresql-ubuntu-22.04-static-${{ env.POSTGRESQL_VERSION }}.zip" >> RELEASE_NOTE.md
+        echo "### Contents" >> RELEASE_NOTE.md
+        echo "#### Windows" >> RELEASE_NOTE.md
+        echo "- lib_win/libpq.lib" >> RELEASE_NOTE.md
+        echo "- lib_win/libpgcommon_shlib.lib" >> RELEASE_NOTE.md
+        echo "- lib_win/libpgport_shlib.lib" >> RELEASE_NOTE.md
+        echo "- lib_win64/libpq.lib" >> RELEASE_NOTE.md
+        echo "- lib_win64/libpgcommon_shlib.lib" >> RELEASE_NOTE.md
+        echo "- lib_win64/libpgport_shlib.lib" >> RELEASE_NOTE.md
+        echo "#### Linux" >> RELEASE_NOTE.md
+        echo "- lib_linux/libpq.a" >> RELEASE_NOTE.md
+        echo "- lib_linux/libpgcommon_shlib.a" >> RELEASE_NOTE.md
+        echo "- lib_linux/libpgport_shlib.a" >> RELEASE_NOTE.md
+        echo "- lib_linux64/libpq.a" >> RELEASE_NOTE.md
+        echo "- lib_linux64/libpgcommon_shlib.a" >> RELEASE_NOTE.md
+        echo "- lib_linux64/libpgport_shlib.a" >> RELEASE_NOTE.md
+        echo "### Headers" >> RELEASE_NOTE.md
+        echo "- libpq-fe.h" >> RELEASE_NOTE.md
+        echo "- postgres_ext.h" >> RELEASE_NOTE.md
+
+    - name: Update Release
+      uses: softprops/action-gh-release@v3
+      with:
+        tag_name: postgresql-${{ env.POSTGRESQL_VERSION }}-${{ github.run_number }}
+        name: PostgreSQL ${{ env.POSTGRESQL_VERSION }} (Build ${{ github.run_number }})
+        body_path: RELEASE_NOTE.md
+        files: |
+          postgresql-windows-latest-static-${{ env.POSTGRESQL_VERSION }}.zip
+          postgresql-ubuntu-latest-static-${{ env.POSTGRESQL_VERSION }}.zip
+          postgresql-ubuntu-22.04-static-${{ env.POSTGRESQL_VERSION }}.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
