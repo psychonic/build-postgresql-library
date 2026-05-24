@@ -107,6 +107,11 @@ jobs:
     steps:
     - uses: actions/checkout@v6
 
+    - name: Install build dependencies
+      run: |
+        apt-get update
+        apt-get install -y bison flex
+
     - name: Download PostgreSQL
       shell: bash
       run: |
