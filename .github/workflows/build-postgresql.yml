@@ -18,22 +18,16 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  build-windows:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, ubuntu-22.04]
+        os: [windows-latest]
 
     runs-on: ${{ matrix.os }}
 
     steps:
     - uses: actions/checkout@v6
-
-    - name: Setup Linux dependencies
-      if: runner.os == 'Linux'
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential gcc-multilib g++-multilib
 
     - name: Setup Windows dependencies
       if: runner.os == 'Windows'
@@ -89,50 +83,68 @@ jobs:
         copy /Y src\include\postgres_ext.h ..\postgresql-artifacts\lib_win64\postgres_ext.h || exit /b 1
         dir /s ..\postgresql-artifacts
 
-    - name: Build PostgreSQL (Linux 64-bit)
-      if: runner.os == 'Linux'
-      run: |
-        mkdir build-linux64
-        cd build-linux64
-        CFLAGS="-fPIC -m64" LDFLAGS="-m64" ../postgresql-source/configure ${{ env.CONFIGURE_FLAGS }}
-        make -j"$(nproc)" -C src/backend generated-headers
-        make -j"$(nproc)" -C src/port libpgport_shlib.a
-        make -j"$(nproc)" -C src/common libpgcommon_shlib.a
-        make -j"$(nproc)" -C src/interfaces/libpq libpq.a SHLIB_PREREQS=
-        mkdir -p ../postgresql-artifacts/lib_linux64
-        cp src/interfaces/libpq/libpq.a ../postgresql-artifacts/lib_linux64/
-        cp src/common/libpgcommon_shlib.a ../postgresql-artifacts/lib_linux64/
-        cp src/port/libpgport_shlib.a ../postgresql-artifacts/lib_linux64/
-        cp ../postgresql-source/src/interfaces/libpq/libpq-fe.h ../postgresql-artifacts/lib_linux64/
-        cp ../postgresql-source/src/include/postgres_ext.h ../postgresql-artifacts/lib_linux64/
+    - name: Archive artifacts
+      uses: actions/upload-artifact@v7
+      with:
+        name: postgresql-windows-latest-static-${{ env.POSTGRESQL_VERSION }}
+        path: postgresql-artifacts/*
+        if-no-files-found: error
 
-    - name: Build PostgreSQL (Linux 32-bit)
-      if: runner.os == 'Linux'
+  build-linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            output_dir: lib_linux64
+          - arch: x86
+            output_dir: lib_linux
+
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/alliedmodders/build-containers/debian11-clang22:latest
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Download PostgreSQL
+      shell: bash
       run: |
-        mkdir build-linux32
-        cd build-linux32
-        CFLAGS="-fPIC -m32" LDFLAGS="-m32" ../postgresql-source/configure ${{ env.CONFIGURE_FLAGS }}
+        curl -L "https://ftp.postgresql.org/pub/source/v${{ env.POSTGRESQL_VERSION }}/postgresql-${{ env.POSTGRESQL_VERSION }}.tar.gz" -o postgresql.tar.gz
+        tar -xzf postgresql.tar.gz
+        mv postgresql-${{ env.POSTGRESQL_VERSION }} postgresql-source
+
+    - name: Build PostgreSQL (${{ matrix.arch }})
+      run: |
+        mkdir build-linux-${{ matrix.arch }}
+        cd build-linux-${{ matrix.arch }}
+        if [ "${{ matrix.arch }}" = "x86_64" ]; then
+          CFLAGS="-fPIC -m64" LDFLAGS="-m64"
+        else
+          CFLAGS="-fPIC -m32" LDFLAGS="-m32"
+        fi
+        CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" ../postgresql-source/configure ${{ env.CONFIGURE_FLAGS }}
         make -j"$(nproc)" -C src/backend generated-headers
         make -j"$(nproc)" -C src/port libpgport_shlib.a
         make -j"$(nproc)" -C src/common libpgcommon_shlib.a
         make -j"$(nproc)" -C src/interfaces/libpq libpq.a SHLIB_PREREQS=
-        mkdir -p ../postgresql-artifacts/lib_linux
-        cp src/interfaces/libpq/libpq.a ../postgresql-artifacts/lib_linux/
-        cp src/common/libpgcommon_shlib.a ../postgresql-artifacts/lib_linux/
-        cp src/port/libpgport_shlib.a ../postgresql-artifacts/lib_linux/
-        cp ../postgresql-source/src/interfaces/libpq/libpq-fe.h ../postgresql-artifacts/lib_linux/
-        cp ../postgresql-source/src/include/postgres_ext.h ../postgresql-artifacts/lib_linux/
+        mkdir -p ../postgresql-artifacts/${{ matrix.output_dir }}
+        cp src/interfaces/libpq/libpq.a ../postgresql-artifacts/${{ matrix.output_dir }}/
+        cp src/common/libpgcommon_shlib.a ../postgresql-artifacts/${{ matrix.output_dir }}/
+        cp src/port/libpgport_shlib.a ../postgresql-artifacts/${{ matrix.output_dir }}/
+        cp ../postgresql-source/src/interfaces/libpq/libpq-fe.h ../postgresql-artifacts/${{ matrix.output_dir }}/
+        cp ../postgresql-source/src/include/postgres_ext.h ../postgresql-artifacts/${{ matrix.output_dir }}/
         find ../postgresql-artifacts -maxdepth 2 -type f -print | sort
 
     - name: Archive artifacts
       uses: actions/upload-artifact@v7
       with:
-        name: postgresql-${{ matrix.os }}-static-${{ env.POSTGRESQL_VERSION }}
+        name: postgresql-ubuntu-latest-static-${{ env.POSTGRESQL_VERSION }}
         path: postgresql-artifacts/*
         if-no-files-found: error
 
   create-release-note:
-    needs: build
+    needs: [build-windows, build-linux]
     runs-on: ubuntu-latest
 
     steps:
